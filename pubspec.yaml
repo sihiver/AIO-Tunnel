@@ -1,0 +1,40 @@
+name: ssh_tunneling
+description: A new Flutter project.
+
+publish_to: 'none' # Remove this line if you wish to publish to pub.dev
+
+version: 1.0.0+1
+
+environment:
+  sdk: ">=2.17.0 <3.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  dynamic_color: ^1.6.5
+  package_info_plus: ^8.0.2 # Perbarui ke versi terbaru
+  shared_preferences: ^2.0.13
+  logger: ^2.4.0 # Perbarui ke versi terbaru
+  win32: ^5.5.4 # Perbarui ke versi terbaru
+  intl: ^0.17.0
+  device_info_plus: ^10.1.2
+  connectivity_plus: ^3.0.2
+  network_info_plus: ^3.0.1
+  dartssh2: ^2.10.0
+  flutter_local_notifications: ^17.2.3
+  flutter_local_notifications_linux: ^4.0.0+1
+  html: ^0.15.0
+  flutter_foreground_task: ^5.0.0
+  permission_handler: ^11.3.0
+  flutter_v2ray: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0  # Perbarui ke versi terbaru
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/logo.png
