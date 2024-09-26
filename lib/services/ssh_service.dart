@@ -1,9 +1,10 @@
 import 'package:dartssh2/dartssh2.dart';
 import 'package:logger/logger.dart';
 import 'package:flutter/foundation.dart';
-import 'package:html/parser.dart' show parse;
 import '../utils/log_manager.dart';
 import 'vpn_service.dart';
+import 'dart:io';
+import 'dart:async';
 
 class SSHService {
   final Logger _logger = Logger();
@@ -15,6 +16,8 @@ class SSHService {
   DateTime? _startTime;
   bool _isVPNActive = false;
   SSHForwardChannel? _forwardChannel;
+  ServerSocket? _socksServer;
+  Timer? _keepAliveTimer;
 
   SSHService(this._logManager) : _vpnService = VPNService(_logManager);
 
@@ -28,6 +31,9 @@ class SSHService {
         socket,
         username: username,
         onPasswordRequest: () => password,
+        printDebug:(p0) {
+          _logManager.addLog('Debug: $p0');
+        },
         onUserauthBanner: (banner) {
           _banner = banner;
         },
@@ -57,6 +63,9 @@ class SSHService {
       await _client!.authenticated;
       _logConnectionDetails();
 
+      // Set up keep-alive mechanism
+      _setupKeepAlive();
+
       // Set up port forwarding
       await _setupPortForwarding();
 
@@ -66,43 +75,114 @@ class SSHService {
     } catch (e) {
       _logger.e('Failed to connect: $e');
       _logManager.addLog('Failed to connect: $e');
+      await disconnect();
       rethrow;
     }
   }
 
+  void _setupKeepAlive() {
+    _keepAliveTimer?.cancel();
+    _keepAliveTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
+      if (_client != null) {
+        try {
+          // Ganti sendIgnore dengan operasi lain yang dapat menjaga koneksi tetap hidup
+          _client!.ping();
+        } catch (e) {
+          _logger.e('Error during keep-alive: $e');
+          _logManager.addLog('Error during keep-alive: $e');
+          timer.cancel();
+        }
+      } else {
+        timer.cancel();
+      }
+    });
+  }
+
   Future<void> _setupPortForwarding() async {
     try {
+      // Gunakan port tetap untuk forwarding lokal
+      const int localForwardPort = 22;
       _forwardChannel = await _client!.forwardLocal(
         'localhost',
-        22,
+        localForwardPort,
       );
-      _logManager.addLog('Port forwarding set up to localhost:22');
+      
+      _logManager.addLog('Local port forwarding set up on localhost:$localForwardPort to remote port 22');
+
+      // Buat SOCKS5 proxy server
+      const int socksPort = 1080;
+      _socksServer = await ServerSocket.bind(InternetAddress.loopbackIPv4, socksPort);
+      _socksServer!.listen((socket) {
+        _handleSocksConnection(socket, localForwardPort);
+      });
+      
+      _logManager.addLog('SOCKS5 proxy started on localhost:$socksPort');
     } catch (e) {
-      _logger.e('Failed to set up port forwarding: $e');
-      _logManager.addLog('Failed to set up port forwarding: $e');
-      throw Exception('Failed to set up port forwarding: $e');
+      _logger.e('Failed to set up port forwarding and SOCKS proxy: $e');
+      _logManager.addLog('Failed to set up port forwarding and SOCKS proxy: $e');
+      await disconnect();
+      throw Exception('Failed to set up port forwarding and SOCKS proxy: $e');
+    }
+  }
+
+  void _handleSocksConnection(Socket clientSocket, int forwardPort) async {
+    try {
+      // SOCKS5 handshake
+      var data = await clientSocket.first;
+      if (data[0] != 0x05) {
+        clientSocket.close();
+        return;
+      }
+
+      // Send authentication method (no authentication)
+      clientSocket.add([0x05, 0x00]);
+
+      // Read connection request
+      data = await clientSocket.first;
+      if (data[0] != 0x05 || data[1] != 0x01 || data[3] != 0x01) {
+        clientSocket.close();
+        return;
+      }
+
+      // Connect to the local forwarded port
+      var forwardSocket = await Socket.connect('localhost', forwardPort);
+
+      // Send connection response
+      clientSocket.add(Uint8List.fromList([0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]));
+
+      // Start forwarding data
+      clientSocket.addStream(forwardSocket);
+      forwardSocket.addStream(clientSocket);
+    } catch (e) {
+      debugPrint('Error in SOCKS connection: $e');
+      _logManager.addLog('Error in SOCKS connection: $e');
+      clientSocket.close();
     }
   }
 
   Future<void> disconnect() async {
     _logManager.addLog('Disconnecting');
     try {
+      _keepAliveTimer?.cancel();
+      
       if (_isVPNActive) {
         await _stopVPN();
       }
       
       if (_forwardChannel != null) {
-        _forwardChannel!.close();
+        await _forwardChannel!.close();
         _logManager.addLog('Port forwarding closed');
       }
       
+      if (_socksServer != null) {
+        await _socksServer!.close();
+        _logManager.addLog('SOCKS5 proxy stopped');
+      }
+      
       if (_client != null) {
-        _client!.close();
+        _client!.close(); // Hapus await di sini
         _logger.i('Disconnection initiated');
         _logManager.addLog('Disconnection initiated');
-
-        // Wait a bit to ensure the connection is fully closed
-        await Future.delayed(const Duration(seconds: 2));
 
         if (_startTime != null) {
           final duration = DateTime.now().difference(_startTime!);
@@ -124,9 +204,15 @@ class SSHService {
 
   Future<void> _startVPN() async {
     try {
-      await _vpnService.startVPN('127.0.0.1', 1080);
-      _isVPNActive = true;
-      _logManager.addLog('VPN started successfully');
+      // Memeriksa dan meminta izin VPN terlebih dahulu
+      if (await _vpnService.requestVPNPermission()) {
+        // Menggunakan SOCKS5 proxy yang telah di-setup
+        await _vpnService.setupAndStartVPN('127.0.0.1', 1080);
+        _isVPNActive = true;
+        _logManager.addLog('VPN started successfully using SOCKS5 proxy');
+      } else {
+        throw Exception('VPN permission not granted');
+      }
     } catch (e) {
       _logger.e('Failed to start VPN: $e');
       _logManager.addLog('Failed to start VPN: $e');
@@ -155,9 +241,8 @@ class SSHService {
       _logManager.addLog('Using MAC algorithms: ${_client!.algorithms.mac.first}');
       _logManager.addLog('Verifying host key for $hostkey');
       if (_banner != null) {
-        var document = parse(_banner!);
-        var bannerHtml = document.outerHtml;
-        _logManager.addLog('Userauth banner: $bannerHtml');
+        // Jika Anda tidak memerlukan parsing HTML, Anda bisa langsung menggunakan _banner
+        _logManager.addLog('Userauth banner: $_banner');
       }
       _logManager.addLog('Connected successfully');
     }

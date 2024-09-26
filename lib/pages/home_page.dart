@@ -137,10 +137,23 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
   Future<void> _toggleConnection() async {
     _logManager.addLog('Toggling connection. Current state: $_connectionState');
-    if (_connectionState == custom_widget.ConnectionState.connected) {
-      await _stopSSHService();
-    } else {
-      await _startSSHService();
+    try {
+      if (_connectionState == custom_widget.ConnectionState.connected) {
+        await _stopSSHService();
+      } else {
+        await _startSSHService();
+      }
+    } catch (e) {
+      _logManager.addLog('Error toggling connection: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e')),
+        );
+      }
+      // Pastikan state diupdate meskipun terjadi error
+      setState(() {
+        _connectionState = custom_widget.ConnectionState.stopped;
+      });
     }
   }
 
@@ -192,6 +205,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       }
       // Show error notification
       await _showNotification('Connection Failed', 'Failed to connect: $e');
+      rethrow; // Melempar kembali error untuk ditangani di _toggleConnection
     }
   }
 
@@ -217,6 +231,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         _connectionState = custom_widget.ConnectionState.stopped;
       });
       await _showNotification('Error', 'Failed to stop SSH service: $e');
+      rethrow; // Melempar kembali error untuk ditangani di _toggleConnection
     }
   }
 
